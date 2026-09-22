@@ -536,12 +536,33 @@ if (true) {
 final int LIMIT = 100;
 // LIMIT = 200;   // compile error
 ```
+Declaring it without an initializer and assigning it exactly once later is legal too — called a *blank
+final* — as long as the compiler can prove every possible path assigns it exactly once before any
+read.<span class="doubt" tabindex="0" data-q="Can you write final int LIMIT; and assign it later?" data-preview="Yes — a &quot;blank final&quot; — as long as every path assigns it exactly once before any read." data-target="doubt-blank-final">?</span>
+
+<div class="sidenote" id="doubt-blank-final">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">Can I write <code>final int LIMIT;</code> and then later assign it a value — basically instantiation and initialization done separately?</div>
+<div class="sidenote-a">
+<p>Yes — that's called a <strong>blank final</strong> variable, and it's legal as long as the compiler can prove it gets assigned exactly once before it's ever read.</p>
+<pre><code class="language-java">final int LIMIT;
+if (someCondition) {
+    LIMIT = 100;
+} else {
+    LIMIT = 200;
+}
+System.out.println(LIMIT); // fine — every path assigned it exactly once</code></pre>
+<p>The compiler does <strong>definite assignment analysis</strong>: every possible execution path must assign the variable exactly once before any read, and once assigned, it can never be reassigned. A branch that might leave <code>LIMIT</code> unassigned (e.g. an <code>if</code> with no <code>else</code>) is a compile error: <code>variable LIMIT might not have been initialized</code>. Assigning it twice on the same path is also a compile error.</p>
+<p>Two places this actually matters: <strong>instance fields</strong>, where every constructor must assign a blank final field exactly once (or delegate via <code>this(...)</code> to one that does); and <strong>lambdas capturing local variables</strong>, which is the same rule showing up indirectly — see the next doubt.</p>
+</div>
+</div>
 
 ### Going Further
 
 - **`final` on a reference freezes the reference, not the object.** `final List<String> list` means you
   can't point `list` at a *different* list, but `list.add("x")` still works fine. True immutability
   requires the object itself to be immutable (see Lesson 0.2 and the `Circle` example in Lesson 1).
+  <span class="doubt" tabindex="0" data-q="What does &quot;effectively final&quot; mean for locals captured by a lambda?" data-preview="A local captured by a lambda must never be reassigned anywhere in the method — the compiler copies its value into the lambda at creation time." data-target="doubt-effectively-final-lambda">?</span>
 - **Short-circuit evaluation**: `&&` and `||` stop evaluating as soon as the answer is determined. This
   is load-bearing, not just an optimization — `if (obj != null && obj.getName().isEmpty())` is safe
   precisely because `&&` won't evaluate the right side when the left is false. `&` and `|` (single) do
@@ -551,6 +572,21 @@ final int LIMIT = 100;
 - **Integer division truncates**: `5 / 2 == 2`, not `2.5`. And `-5 / 2 == -2` (truncates toward zero),
   while `Math.floorDiv(-5, 2) == -3`. The `%` operator can return a negative result for negative
   operands (`-5 % 3 == -2`), which breaks naive hash-bucket index calculations — a real bug source.
+
+<div class="sidenote" id="doubt-effectively-final-lambda">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">What does "effectively final locals in lambdas/inner classes" actually mean?</div>
+<div class="sidenote-a">
+<pre><code class="language-java">void printAll(List&lt;String&gt; names) {
+    String prefix = "Name: ";
+    names.forEach(name -&gt; System.out.println(prefix + name)); // fine
+}</code></pre>
+<p><code>prefix</code> isn't declared <code>final</code>, but the lambda uses it. This compiles because <code>prefix</code> is never reassigned anywhere after its declaration — it's <strong>effectively final</strong> (final in behavior, even without the keyword). Reassign it anywhere in the method and it's a compile error the moment a lambda tries to capture it: <code>variable prefix is accessed from within inner class; needs to be final or effectively final</code>.</p>
+<p><strong>Why the rule exists</strong>: a local variable lives on the method's stack frame, which disappears when the method returns. But a lambda can outlive the method — handed to a thread pool, stored in a list, returned — and might run long after the stack frame is gone. So Java doesn't let the lambda hold a live reference to the local; instead it <strong>copies the value</strong> into the lambda object at creation time. If the original variable could still change afterward, the lambda's copy and the "real" variable would drift apart. Java sidesteps the question of which one is right by simply forbidding the variable from changing after capture — the same guarantee <code>final</code> gives, enforced by the identical definite-assignment check.</p>
+<p><strong>Fields don't have this restriction</strong> — <code>() -&gt; count++</code> inside a method that mutates an instance field <code>count</code> is fine, because the lambda captures <code>this</code> (a stable reference), not the field directly, and reads/writes the current value through it each time.</p>
+<p>The practical workaround when you need a value that changes across lambda invocations: wrap it in something mutable whose <em>reference</em> never changes, only its contents — e.g. <code>AtomicInteger count = new AtomicInteger(0); names.forEach(n -&gt; count.incrementAndGet());</code>. This is the same pattern behind <code>Inventory.tryReserve</code>'s CAS loop and the rate limiter solutions.</p>
+</div>
+</div>
 
 ---
 
@@ -594,12 +630,91 @@ do { ... } while (condition);                // at least one iteration
   The `->` form doesn't fall through, and when switching over an enum or sealed type the compiler
   enforces **exhaustiveness** — add a new enum constant and any non-exhaustive switch fails to compile.
   That compile-time guarantee is a genuine design tool; we use it in Lesson 0.4 with sealed types.
+  <span class="doubt" tabindex="0" data-q="What do &quot;doesn't fall through&quot; and &quot;exhaustiveness&quot; actually mean here?" data-preview="Each -> arm runs alone, no break needed; and an exhaustive switch over an enum won't compile if you forget a constant." data-target="doubt-switch-arrow-exhaustive">?</span>
 - **Labeled breaks** exist for escaping nested loops (`outer: for(...) { for(...) { break outer; } }`).
   Legal, occasionally the cleanest option, but usually a sign the loop body should be a method with an
   early `return`.
+  <span class="doubt" tabindex="0" data-q="How do labeled breaks actually work?" data-preview="A label on the outer loop lets break outer jump past both loops at once, not just the inner one." data-target="doubt-labeled-break">?</span>
 - **Prefer the enhanced for-loop** unless you need the index or need to mutate the list while iterating.
   Mutating a collection during an enhanced for-loop throws `ConcurrentModificationException` — use
   `Iterator.remove()` or `Collection.removeIf()` instead (covered in Lesson 0.3).
+  <span class="doubt" tabindex="0" data-q="Why does mutating a list during an enhanced for-loop throw ConcurrentModificationException?" data-preview="The enhanced for-loop uses an Iterator internally; the list detects it was structurally changed by something other than that iterator and fails fast." data-target="doubt-enhanced-for-cme">?</span>
+
+<div class="sidenote" id="doubt-switch-arrow-exhaustive">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">The -> form doesn't fall through, and when switching over an enum or sealed type the compiler enforces exhaustiveness — what does that actually mean?</div>
+<div class="sidenote-a">
+<p>Old-style switch <strong>falls through</strong> by default — forgetting <code>break</code> runs into the next case:</p>
+<pre><code class="language-java">switch (day) {
+    case MONDAY:
+        System.out.println("Start of week");
+        // no break!
+    case TUESDAY:
+        System.out.println("Tuesday");
+        break;
+}</code></pre>
+<p>If <code>day == MONDAY</code>, this prints <strong>both</strong> lines — execution "falls through" MONDAY into TUESDAY. The <code>-&gt;</code> arrow form doesn't do this — each arm is isolated, nothing to forget:</p>
+<pre><code class="language-java">switch (day) {
+    case MONDAY -&gt; System.out.println("Start of week");
+    case TUESDAY -&gt; System.out.println("Tuesday");
+}</code></pre>
+<p>Now <code>day == MONDAY</code> prints only "Start of week." No <code>break</code> needed or allowed.</p>
+<p><strong>Exhaustiveness</strong> is separate and bigger: when a switch <em>expression</em> (one that returns a value) covers an enum and you haven't handled every constant, it won't compile:</p>
+<pre><code class="language-java">enum Direction { UP, DOWN, LEFT, RIGHT }
+
+String describe(Direction d) {
+    return switch (d) {
+        case UP -&gt; "Going up";
+        case DOWN -&gt; "Going down";
+        case LEFT -&gt; "Going left";
+        // forgot RIGHT — COMPILE ERROR
+    };
+}</code></pre>
+<p>This is genuinely useful: if someone adds a new enum constant six months later, every exhaustive switch over that enum that doesn't handle it fails to compile immediately — a build error pointing at every spot needing an update, instead of a silent runtime bug where the new case falls into the wrong branch.</p>
+</div>
+</div>
+
+<div class="sidenote" id="doubt-labeled-break">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">How do labeled breaks actually work?</div>
+<div class="sidenote-a">
+<p>A plain <code>break</code> only exits the <em>innermost</em> loop:</p>
+<pre><code class="language-java">for (int i = 0; i &lt; 3; i++) {
+    for (int j = 0; j &lt; 3; j++) {
+        if (j == 1) break; // only exits the inner loop, outer keeps going
+    }
+}</code></pre>
+<p>To exit both loops at once, label the outer loop and break out to that label:</p>
+<pre><code class="language-java">outer:
+for (int i = 0; i &lt; 3; i++) {
+    for (int j = 0; j &lt; 3; j++) {
+        if (i == 1 &amp;&amp; j == 1) break outer; // exits BOTH loops entirely
+    }
+}</code></pre>
+<p><code>outer:</code> is just a name attached to the <code>for</code> statement; <code>break outer;</code> jumps past it entirely, not just the inner loop.</p>
+<p>Why it's usually a smell: needing to escape two nested loops at once is often a sign the inner loop's search logic wants to be its own method — then you just <code>return</code> the moment you find what you're looking for, which reads more clearly than tracking a label. Not wrong, just often a symptom.</p>
+</div>
+</div>
+
+<div class="sidenote" id="doubt-enhanced-for-cme">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">Why does mutating a collection during an enhanced for-loop throw ConcurrentModificationException?</div>
+<div class="sidenote-a">
+<pre><code class="language-java">for (String name : names) {
+    if (name.equals("b")) {
+        names.remove(name); // throws ConcurrentModificationException
+    }
+}</code></pre>
+<p>This throws at runtime. Under the hood, the enhanced for-loop is using an <code>Iterator</code>, and the list detects it was structurally changed by something <em>other than that iterator</em> mid-loop — it can't guarantee the rest of the iteration still makes sense, so it fails loudly instead of silently skipping or double-processing elements.</p>
+<p>Fix — use the iterator's own <code>remove()</code>, which the list trusts because it updates the iterator's bookkeeping too:</p>
+<pre><code class="language-java">Iterator&lt;String&gt; it = names.iterator();
+while (it.hasNext()) {
+    if (it.next().equals("b")) it.remove(); // safe
+}</code></pre>
+<p>Or the one-liner (Java 8+): <code>names.removeIf(name -&gt; name.equals("b"));</code></p>
+<p>Worth remembering concretely — this is the exact pattern for anywhere you loop over a collection to prune expired/stale entries, e.g. a hold-expiry sweep like the one in the Movie Ticket Booking solution.</p>
+</div>
+</div>
 
 ---
 
@@ -627,14 +742,66 @@ Indexes start at **0**, so the last valid index is `length - 1`. Going outside t
 - **Arrays are covariant, and that's a hole in the type system.** `Object[] objs = new String[2];`
   compiles — then `objs[0] = 42;` throws `ArrayStoreException` at *runtime*. Generics (Lesson 0.3) are
   invariant precisely to catch this class of error at compile time instead.
+  <span class="doubt" tabindex="0" data-q="What does &quot;arrays are covariant&quot; mean, and why does the ArrayStoreException example happen?" data-preview="String[] is treated as a subtype of Object[], so a type error that should be a compile error only surfaces at runtime, on the exact line that stores the wrong type." data-target="doubt-array-covariance">?</span>
 - **`arr.length` vs `str.length()` vs `list.size()`** — three different spellings for the same idea, a
   genuine historical wart worth memorizing.
+  <span class="doubt" tabindex="0" data-q="Why are there three different spellings for &quot;how many&quot;?" data-preview="No technical reason — arrays predate the language's OOP conventions, String and Collection each independently picked a name." data-target="doubt-length-size-wart">?</span>
 - **Use `Arrays.equals()`/`Arrays.deepEquals()`, not `==`**, to compare contents — `==` compares
   references. Likewise `Arrays.toString()` for printing, since an array's default `toString()` prints
   something like `[I@1b6d3586`.
+  <span class="doubt" tabindex="0" data-q="Why doesn't array.equals() compare contents like String/List do?" data-preview="Arrays never override equals()/toString() from Object, so .equals() silently falls back to reference comparison — same bug shape as == but easier to miss." data-target="doubt-arrays-equals">?</span>
 - **When to use an array at all**: in real code, prefer `List`. Reach for arrays for primitives in
   performance-critical paths (no boxing overhead), for fixed-size grids (game boards — you'll use this
   in Tic Tac Toe and Chess), or when an API requires one.
+  <span class="doubt" tabindex="0" data-q="When should I actually reach for an array instead of a List?" data-preview="Default to List; arrays earn their place for primitives in hot loops, genuinely fixed-size grids, or when an API requires one." data-target="doubt-array-vs-list">?</span>
+
+<div class="sidenote" id="doubt-array-covariance">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">What does "arrays are covariant" mean, and why does the ArrayStoreException example actually happen?</div>
+<div class="sidenote-a">
+<p>Since <code>String</code> is a subtype of <code>Object</code>, Java treats <code>String[]</code> as a subtype of <code>Object[]</code> too — that's <strong>covariance</strong>. It lets this compile:</p>
+<pre><code class="language-java">Object[] objs = new String[2]; // compiles — String[] "is-a" Object[]
+objs[0] = 42;                  // ALSO compiles (Integer is an Object)...
+                                // but throws ArrayStoreException at RUNTIME</code></pre>
+<p>The compiler can't catch the problem — through the <code>Object[]</code> reference, storing an <code>Integer</code> looks perfectly legal. But the JVM remembers the array's <em>actual</em> runtime type (it's really a <code>String[]</code>), checks on every store, and throws when you try to put an <code>Integer</code> into what's actually a <code>String</code> array. A bug that should be a compile error only surfaces when that exact line runs.</p>
+<p>Why arrays work this way at all: this predates generics (Java 1.0) — covariance let one method like <code>Arrays.sort(Object[] a)</code> sort any array type without a separate method per type. Generics fixed the hole by going the opposite way — <strong>invariant</strong>: <code>List&lt;String&gt;</code> and <code>List&lt;Object&gt;</code> have no subtype relationship at all, even though <code>String</code> IS-A <code>Object</code>. <code>List&lt;Object&gt; objs = someListOfStrings;</code> doesn't compile, full stop — the exact bug arrays only catch at runtime, generics catch at compile time.</p>
+</div>
+</div>
+
+<div class="sidenote" id="doubt-length-size-wart">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">Why are there three different spellings (length field, length(), size()) for the same idea?</div>
+<div class="sidenote-a">
+<p><code>arr.length</code> — a <strong>field</strong>, no parentheses. Arrays are a special low-level JVM construct baked into the language spec since Java 1.0, not a real class.</p>
+<p><code>str.length()</code> — a <strong>method</strong>, since <code>String</code> is an actual class.</p>
+<p><code>list.size()</code> — also a method, but a different word entirely.</p>
+<p>There's no technical reason for the inconsistency — three different APIs at different times picked different names for "how many." You just memorize it: array &rarr; <code>.length</code> (no parens), String &rarr; <code>.length()</code>, Collection &rarr; <code>.size()</code>.</p>
+</div>
+</div>
+
+<div class="sidenote" id="doubt-arrays-equals">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">Why doesn't array.equals() compare contents the way String/List equals() does?</div>
+<div class="sidenote-a">
+<p>Arrays never override <code>equals()</code> or <code>toString()</code> from <code>Object</code>, so:</p>
+<pre><code class="language-java">int[] a = {1, 2, 3};
+int[] b = {1, 2, 3};
+a.equals(b)   // false! falls back to Object's default = same as ==, i.e. reference comparison</code></pre>
+<p>Surprising, since <code>String</code>/<code>List</code> <em>do</em> override <code>equals()</code> to compare contents — arrays just don't. Use <code>Arrays.equals(a, b)</code> instead (<code>true</code>, element-by-element). For a 2D array (a board), <code>Arrays.equals</code> would only compare the inner-array <em>references</em>, not recurse into them — use <code>Arrays.deepEquals()</code> for that.</p>
+<p>Printing has the identical trap: <code>System.out.println(a)</code> prints something like <code>[I@1b6d3586</code> (<code>[I</code> = "array of int", then the hashcode) — useless for debugging. <code>Arrays.toString(a)</code> gives <code>[1, 2, 3]</code>; <code>Arrays.deepToString(matrix)</code> for 2D.</p>
+</div>
+</div>
+
+<div class="sidenote" id="doubt-array-vs-list">
+<div class="sidenote-label">&#128172; Doubt</div>
+<div class="sidenote-q">When should I actually reach for an array instead of a List?</div>
+<div class="sidenote-a">
+<p>Default to <code>List</code> in real code — resizable, rich API, doesn't have the covariance hole above. Arrays earn their place in three specific cases:</p>
+<p><strong>Primitives in hot loops</strong> — <code>int[]</code> avoids boxing every element into an <code>Integer</code> object, a real, measurable saving at scale (Lesson 0.1's autoboxing section).</p>
+<p><strong>Fixed-size grids</strong> where the size genuinely never changes — a Tic Tac Toe or Chess board is the canonical example, and you'll build exactly this in those solutions.</p>
+<p><strong>An API that requires one</strong> — varargs desugar to arrays under the hood, and some reflection/legacy APIs too.</p>
+</div>
+</div>
 
 ---
 
